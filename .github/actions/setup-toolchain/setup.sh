@@ -65,6 +65,8 @@ esac
 # поэтому файловые операции делаем в POSIX-видах через cygpath, а в ENV и PATH
 # кладём форму C:/... — её понимают и bash, и PowerShell шагов джобы.
 work_temp="${RUNNER_TEMP:-/tmp}"
+# Windows-раннер: zip распаковывает Expand-Archive (см. ниже).
+case "${RUNNER_OS:-}" in Windows) FLUTTER_ZIP_EXTRACT=1 ;; esac
 dest="${RUNNER_TOOL_CACHE:?}/flutter/${FLUTTER_VERSION}"
 root="$dest/flutter"
 if command -v cygpath >/dev/null 2>&1; then
@@ -79,10 +81,21 @@ if [ ! -f "$root/bin/flutter" ]; then
   url="https://storage.googleapis.com/flutter_infra_release/releases/stable/${os}/flutter_${os}_${FLUTTER_VERSION}-stable.${ext}"
   mkdir -p "$dest"
   echo "Flutter: скачиваем $url"
-  curl -fsSL --retry 3 -o "$work_temp/flutter-sdk.$ext" "$url"
-  # tar из Git for Windows (bsdtar) и GNU tar на Linux понимают свой формат;
-  # zip распаковываем тем же tar — так шаг не зависит от наличия unzip.
-  tar -xf "$work_temp/flutter-sdk.$ext" -C "$dest"
+  if [ -n "${FLUTTER_ZIP_EXTRACT:-}" ] && command -v cygpath >/dev/null 2>&1; then
+    # Windows: архив zip, а tar на раннере — GNU tar, zip он не читает
+    # («This does not look like a tar archive»). Скачиваем и распаковываем
+    # в Windows-видах путей: curl/Expand-Archive — нативные исполняемые файлы.
+    dest_w="$(cygpath -m "$dest")"
+    zip_w="$(cygpath -m "$work_temp")/flutter-sdk.$ext"
+    curl -fsSL --retry 3 -o "$zip_w" "$url"
+    ls -l "$zip_w"
+    powershell.exe -NoProfile -NonInteractive -Command \
+      "Expand-Archive -Force -Path '$zip_w' -DestinationPath '$dest_w'"
+  else
+    curl -fsSL --retry 3 -o "$work_temp/flutter-sdk.$ext" "$url"
+    # GNU tar на Linux понимает свой формат; zip (Windows) сюда не попадает.
+    tar -xf "$work_temp/flutter-sdk.$ext" -C "$dest"
+  fi
 fi
 
 [ -f "$root/bin/flutter" ] || { echo "::error::Flutter не установился в $root"; exit 1; }
