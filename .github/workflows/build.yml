@@ -69,6 +69,11 @@ jobs:
   android-clean:
     name: Android universal APK (clean)
     runs-on: windows-latest
+    env:
+      # Kotlin incremental-кэш падает, когда исходники плагинов лежат на C:
+      # (Pub\Cache по умолчанию), а build — на D: («this and base files have
+      # different roots»). Держим pub-cache на одном дискe с workspace.
+      PUB_CACHE: ${{ github.workspace }}/.pub-cache
     steps:
       - name: Checkout build repo
         uses: actions/checkout@v4
@@ -148,6 +153,10 @@ jobs:
   android-ads:
     name: Android ads APK
     runs-on: windows-latest
+    env:
+      # См. android-clean: pub-cache на диске workspace, иначе Kotlin
+      # incremental-кэш падает на «different roots».
+      PUB_CACHE: ${{ github.workspace }}/.pub-cache
     steps:
       - name: Checkout build repo
         uses: actions/checkout@v4
