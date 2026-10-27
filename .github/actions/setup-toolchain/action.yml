@@ -1,0 +1,29 @@
+name: Setup toolchain
+description: >
+  Готовит Flutter и JDK 17 для сборки. Приоритет — инструменты машины
+  раннера (self-hosted), иначе официальный архив Flutter (hosted).
+  Заменяет subosito/flutter-action и actions/setup-java (D-305): они
+  составные и вложенно тянут actions/cache (~2 МБ), который по текущему
+  каналу не успевает скачаться за таймаут раннера (100 с), и джоба
+  падает на «Set up job» ещё до первого шага.
+
+inputs:
+  flutter-version:
+    description: Версия Flutter стабильного канала (например, 3.47.5)
+    required: true
+  require-java:
+    description: >
+      Требовать JDK 17. Нужен только Android-джобам (Gradle); Linux-джобе
+      для сборки AppImage Java не нужна, а на раннере её может не быть.
+    required: false
+    default: 'false'
+
+runs:
+  using: composite
+  steps:
+    - name: Prepare toolchain
+      shell: bash
+      env:
+        FLUTTER_VERSION: ${{ inputs.flutter-version }}
+        REQUIRE_JAVA: ${{ inputs.require-java }}
+      run: bash "$GITHUB_ACTION_PATH/setup.sh"

@@ -1,0 +1,31 @@
+name: Android release key
+description: >-
+  Кладёт постоянный ключ подписи Android из секретов репозитория во временный
+  каталог раннера и задаёт переменные окружения для Gradle (D-264/D-308).
+  Файл ключа в репозитории не лежит: в секрете — base64 от .jks.
+
+inputs:
+  keystore-base64:
+    description: Секрет ANDROID_KEYSTORE_BASE64 — .jks в base64
+    required: true
+  store-password:
+    description: Секрет ANDROID_KEYSTORE_PASSWORD — пароль хранилища
+    required: true
+  key-alias:
+    description: Секрет ANDROID_KEY_ALIAS — alias ключа
+    required: true
+  key-password:
+    description: Секрет ANDROID_KEY_PASSWORD — пароль ключа
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Restore keystore
+      shell: bash
+      env:
+        KEYSTORE_BASE64: ${{ inputs.keystore-base64 }}
+        KEYSTORE_PASSWORD: ${{ inputs.store-password }}
+        KEY_ALIAS: ${{ inputs.key-alias }}
+        KEY_PASSWORD: ${{ inputs.key-password }}
+      run: bash "$GITHUB_ACTION_PATH/restore.sh"

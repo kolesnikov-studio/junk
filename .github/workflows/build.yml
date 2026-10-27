@@ -1,0 +1,416 @@
+name: Build Kopilka
+
+# Публичный сборочный репозиторий: исходник закрытого kopilka-code здесь не
+# хранится. Workflow берёт его по read-only deploy key на эфемерный
+# GitHub-hosted раннер и складывает готовые артефакты в этот репозиторий.
+# Секреты: KOPILKA_DEPLOY_KEY и четыре ANDROID_* (D-264/D-308).
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Commit/tag/branch in kolesnikov-studio/kopilka-code'
+        required: true
+        default: main
+      tag:
+        description: 'Draft release tag in junk (e.g. v0.12.0); empty = artifacts only'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+env:
+  FLUTTER_VERSION: '3.47.5'
+  ANDROID_CERT_SHA256: 'e1a1cf1e80f44a19da40306aad3a1cc1f0e3e4890435fad09ee0cc2a8e1382fd'
+  SOURCE_REPO: kolesnikov-studio/kopilka-code
+
+jobs:
+  analyze:
+    name: Analyze + test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout private source
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.SOURCE_REPO }}
+          ref: ${{ inputs.ref }}
+          ssh-key: ${{ secrets.KOPILKA_DEPLOY_KEY }}
+          path: src
+          persist-credentials: false
+
+      - name: Set up toolchain
+        uses: ./.github/actions/setup-toolchain
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+
+      - name: Pub get
+        working-directory: src
+        run: flutter pub get
+
+      - name: Generate localizations
+        working-directory: src
+        run: flutter gen-l10n
+
+      - name: Format check
+        working-directory: src
+        run: dart format --output=none --set-exit-if-changed lib test
+
+      - name: Analyze
+        working-directory: src
+        run: flutter analyze
+
+      - name: Test
+        working-directory: src
+        run: flutter test
+
+  android-clean:
+    name: Android universal APK (clean)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout private source
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.SOURCE_REPO }}
+          ref: ${{ inputs.ref }}
+          ssh-key: ${{ secrets.KOPILKA_DEPLOY_KEY }}
+          path: src
+          persist-credentials: false
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up toolchain
+        uses: ./.github/actions/setup-toolchain
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          require-java: 'true'
+
+      - name: Restore release keystore
+        uses: ./.github/actions/android-release-key
+        with:
+          keystore-base64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          store-password: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          key-alias: ${{ secrets.ANDROID_KEY_ALIAS }}
+          key-password: ${{ secrets.ANDROID_KEY_PASSWORD }}
+
+      - name: Build universal APK (clean flavor)
+        working-directory: src
+        run: flutter build apk --flavor clean --release
+
+      - name: Verify APK signature (clean)
+        working-directory: src
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $apk = 'build/app/outputs/flutter-apk/app-clean-release.apk'
+          if (-not (Test-Path $apk)) { throw "APK не собран: $apk" }
+          $props = 'android/local.properties'
+          if (-not (Test-Path $props)) { throw "нет $props — APK собирался не Flutter'ом?" }
+          $line = Select-String -Path $props -Pattern '^sdk\.dir=(.*)$' | Select-Object -First 1
+          if (-not $line) { throw "в $props нет sdk.dir" }
+          $sdk = $line.Matches[0].Groups[1].Value -replace '\\\\', '\'
+          $buildTools = Get-ChildItem -Path (Join-Path $sdk 'build-tools') -Directory |
+            Sort-Object { [version]$_.Name } | Select-Object -Last 1
+          if (-not $buildTools) { throw "в $sdk\build-tools нет версий — apksigner не найти" }
+          $apksigner = Join-Path $buildTools.FullName 'apksigner.bat'
+          if (-not (Test-Path $apksigner)) { throw "нет $apksigner" }
+          $out = & $apksigner verify --print-certs $apk 2>&1 | Out-String
+          if ($LASTEXITCODE -ne 0) { throw "apksigner: APK не прошёл проверку подписи" }
+          $m = [regex]::Match($out, 'SHA-256 digest:\s*([0-9a-fA-F]+)')
+          if (-not $m.Success) { throw 'apksigner не вернул отпечаток сертификата' }
+          $digest = $m.Groups[1].Value.ToLowerInvariant()
+          if ($digest -ne $env:ANDROID_CERT_SHA256.ToLowerInvariant()) {
+            throw "APK подписан НЕ постоянным ключом Kopilka: $digest"
+          }
+          Write-Host "APK подписан постоянным ключом Kopilka"
+
+      - name: Upload clean APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-clean
+          path: src/build/app/outputs/flutter-apk/app-clean-release.apk
+          if-no-files-found: error
+
+      - name: Remove keystore
+        if: always()
+        shell: bash
+        run: rm -f "${RUNNER_TEMP}/kopilka-release.jks"
+
+  android-ads:
+    name: Android ads APK
+    runs-on: windows-latest
+    steps:
+      - name: Checkout private source
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.SOURCE_REPO }}
+          ref: ${{ inputs.ref }}
+          ssh-key: ${{ secrets.KOPILKA_DEPLOY_KEY }}
+          path: src
+          persist-credentials: false
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up toolchain
+        uses: ./.github/actions/setup-toolchain
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          require-java: 'true'
+
+      - name: Restore release keystore
+        uses: ./.github/actions/android-release-key
+        with:
+          keystore-base64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          store-password: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          key-alias: ${{ secrets.ANDROID_KEY_ALIAS }}
+          key-password: ${{ secrets.ANDROID_KEY_PASSWORD }}
+
+      - name: Build ads APK
+        working-directory: src
+        run: flutter build apk --flavor ads --dart-define=ADMOB=true --dart-define=ADMOB_PRIVACY_POLICY_URL=https://kolesnikovstudio.com/legal/privacy-kopilka/ --release
+
+      - name: Verify APK signature (ads)
+        working-directory: src
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $apk = 'build/app/outputs/flutter-apk/app-ads-release.apk'
+          if (-not (Test-Path $apk)) { throw "APK не собран: $apk" }
+          $props = 'android/local.properties'
+          if (-not (Test-Path $props)) { throw "нет $props — APK собирался не Flutter'ом?" }
+          $line = Select-String -Path $props -Pattern '^sdk\.dir=(.*)$' | Select-Object -First 1
+          if (-not $line) { throw "в $props нет sdk.dir" }
+          $sdk = $line.Matches[0].Groups[1].Value -replace '\\\\', '\'
+          $buildTools = Get-ChildItem -Path (Join-Path $sdk 'build-tools') -Directory |
+            Sort-Object { [version]$_.Name } | Select-Object -Last 1
+          if (-not $buildTools) { throw "в $sdk\build-tools нет версий — apksigner не найти" }
+          $apksigner = Join-Path $buildTools.FullName 'apksigner.bat'
+          if (-not (Test-Path $apksigner)) { throw "нет $apksigner" }
+          $out = & $apksigner verify --print-certs $apk 2>&1 | Out-String
+          if ($LASTEXITCODE -ne 0) { throw "apksigner: APK не прошёл проверку подписи" }
+          $m = [regex]::Match($out, 'SHA-256 digest:\s*([0-9a-fA-F]+)')
+          if (-not $m.Success) { throw 'apksigner не вернул отпечаток сертификата' }
+          $digest = $m.Groups[1].Value.ToLowerInvariant()
+          if ($digest -ne $env:ANDROID_CERT_SHA256.ToLowerInvariant()) {
+            throw "APK подписан НЕ постоянным ключом Kopilka: $digest"
+          }
+          Write-Host "APK подписан постоянным ключом Kopilka"
+
+      - name: Upload ads APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-ads
+          path: src/build/app/outputs/flutter-apk/app-ads-release.apk
+          if-no-files-found: error
+
+      - name: Remove keystore
+        if: always()
+        shell: bash
+        run: rm -f "${RUNNER_TEMP}/kopilka-release.jks"
+
+  windows:
+    name: Windows NSIS + portable
+    runs-on: windows-latest
+    steps:
+      - name: Checkout private source
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.SOURCE_REPO }}
+          ref: ${{ inputs.ref }}
+          ssh-key: ${{ secrets.KOPILKA_DEPLOY_KEY }}
+          path: src
+          persist-credentials: false
+
+      - name: Set up toolchain
+        uses: ./.github/actions/setup-toolchain
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+
+      - name: Resolve artifact label
+        id: label
+        shell: pwsh
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          $label = $env:INPUT_TAG
+          if (-not $label) {
+            $version = (Select-String -Path src/pubspec.yaml -Pattern '^version:\s*([0-9]+\.[0-9]+\.[0-9]+)').Matches[0].Groups[1].Value
+            $label = "v$version"
+          }
+          "label=$label" >> $env:GITHUB_OUTPUT
+          "version=$($label.TrimStart('v'))" >> $env:GITHUB_OUTPUT
+
+      - name: Build Windows release
+        working-directory: src
+        run: flutter build windows --release
+
+      - name: Check bundled NOTICES.Z
+        shell: pwsh
+        run: |
+          $notices = "src/build/windows/x64/runner/Release/data/flutter_assets/NOTICES.Z"
+          if (-not (Test-Path -LiteralPath $notices)) {
+            throw "NOTICES.Z отсутствует в бандле ($notices)"
+          }
+          if ((Get-Item -LiteralPath $notices).Length -le 0) {
+            throw "NOTICES.Z пуст ($notices)"
+          }
+
+      - name: Install NSIS
+        shell: pwsh
+        run: choco install nsis -y --no-progress
+
+      - name: Make NSIS installer
+        working-directory: src
+        shell: pwsh
+        env:
+          LABEL: ${{ steps.label.outputs.label }}
+          VERSION: ${{ steps.label.outputs.version }}
+        run: |
+          $makensis = "${env:ProgramFiles(x86)}\NSIS\makensis.exe"
+          if (-not (Test-Path $makensis)) { $makensis = (Get-Command makensis).Source }
+          $outFile = Join-Path (Get-Location) "Kopilka-setup-$env:LABEL.exe"
+          & $makensis /DPRODUCT_VERSION=$env:VERSION "/DOUTFILE=$outFile" packaging/windows/kopilka.nsi
+
+      - name: Make portable zip
+        working-directory: src
+        shell: pwsh
+        env:
+          LABEL: ${{ steps.label.outputs.label }}
+        run: Compress-Archive -Path 'build/windows/x64/runner/Release/*' -DestinationPath "Kopilka-portable-$env:LABEL.zip"
+
+      - name: Make installer sha256
+        working-directory: src
+        shell: pwsh
+        env:
+          LABEL: ${{ steps.label.outputs.label }}
+        run: |
+          $exe = "Kopilka-setup-$env:LABEL.exe"
+          $hash = (certutil -hashfile $exe SHA256 | Select-Object -Skip 1 -First 1).Trim()
+          $hash.ToLowerInvariant() | Set-Content -NoNewline -Encoding ascii "Kopilka-setup-$env:LABEL.exe.sha256"
+
+      - name: Probe updater (no partial install)
+        working-directory: src
+        shell: pwsh
+        env:
+          LABEL: ${{ steps.label.outputs.label }}
+        run: |
+          $log = Join-Path $env:TEMP "kopilka-probe-out.txt"
+          pwsh -NoProfile -File ./packaging/windows/test-installer-update.ps1 `
+            -SetupExe "Kopilka-setup-$env:LABEL.exe" `
+            -PayloadExe "build/windows/x64/runner/Release/kopilka.exe" 2>&1 |
+            Tee-Object -FilePath $log
+          if ($LASTEXITCODE -ne 0) { throw "Проба обновления красная (код $LASTEXITCODE)" }
+          $out = if (Test-Path $log) { Get-Content $log -Raw } else { "" }
+          foreach ($scene in @("SCENE A: ran", "SCENE B: ran", "SCENE C: ran")) {
+            if ($out -notmatch [regex]::Escape($scene)) { throw "Проба обновления выполнена не полностью, нет сцены: $scene" }
+          }
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: |
+            src/Kopilka-setup-*.exe
+            src/Kopilka-setup-*.exe.sha256
+            src/Kopilka-portable-*.zip
+          if-no-files-found: error
+
+  linux:
+    name: Linux AppImage
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout private source
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.SOURCE_REPO }}
+          ref: ${{ inputs.ref }}
+          ssh-key: ${{ secrets.KOPILKA_DEPLOY_KEY }}
+          path: src
+          persist-credentials: false
+
+      - name: Set up toolchain
+        uses: ./.github/actions/setup-toolchain
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libgtk-3-dev libfuse2
+
+      - name: Resolve artifact label
+        id: label
+        shell: bash
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          label="$INPUT_TAG"
+          if [ -z "$label" ]; then
+            version="$(sed -nE 's/^version: ([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' src/pubspec.yaml | head -n 1)"
+            label="v$version"
+          fi
+          echo "label=$label" >> "$GITHUB_OUTPUT"
+
+      - name: Build Linux release
+        working-directory: src
+        run: flutter build linux --release
+
+      - name: Assemble AppDir
+        working-directory: src
+        shell: bash
+        env:
+          LABEL: ${{ steps.label.outputs.label }}
+        run: ./packaging/linux/make_appdir.sh "$LABEL"
+
+      - name: Make AppImage
+        working-directory: src
+        shell: bash
+        env:
+          LABEL: ${{ steps.label.outputs.label }}
+        run: |
+          curl -sSL -o appimagetool.AppImage \
+            https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x appimagetool.AppImage
+          ./appimagetool.AppImage --appimage-extract-and-run Kopilka.AppDir \
+            "Kopilka-${LABEL#v}-x86_64.AppImage"
+
+      - name: Upload AppImage
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: src/Kopilka-*-x86_64.AppImage
+          if-no-files-found: error
+
+  release:
+    name: Draft release in junk
+    if: inputs.tag != ''
+    needs: [analyze, windows, linux, android-ads]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create or update draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+          REF: ${{ inputs.ref }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --clobber
+          else
+            gh release create "$TAG" --draft \
+              --title "Kopilka $TAG" \
+              --notes "Сборка Kopilka $TAG из закрытого kopilka-code@$REF на GitHub-hosted раннерах. Исходник в junk не хранится." \
+              dist/*
+          fi
