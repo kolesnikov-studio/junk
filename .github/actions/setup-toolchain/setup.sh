@@ -60,21 +60,34 @@ case "${RUNNER_OS:-Linux}" in
   *) echo "::error::неизвестная ОС раннера: ${RUNNER_OS:-}"; exit 1 ;;
 esac
 
+# Пути раннера на Windows — вида D:\a\_temp. bsdtar из Git for Windows
+# читает их как «host:path» и падает («Cannot connect to D: resolve failed»),
+# поэтому файловые операции делаем в POSIX-видах через cygpath, а в ENV и PATH
+# кладём форму C:/... — её понимают и bash, и PowerShell шагов джобы.
+work_temp="${RUNNER_TEMP:-/tmp}"
 dest="${RUNNER_TOOL_CACHE:?}/flutter/${FLUTTER_VERSION}"
 root="$dest/flutter"
-if [ ! -x "$root/bin/flutter" ]; then
+if command -v cygpath >/dev/null 2>&1; then
+  work_temp="$(cygpath -u "$work_temp")"
+  dest="$(cygpath -u "$dest")"
+  root="$(cygpath -u "$root")"
+  root_env="$(cygpath -m "$root")"
+else
+  root_env="$root"
+fi
+if [ ! -f "$root/bin/flutter" ]; then
   url="https://storage.googleapis.com/flutter_infra_release/releases/stable/${os}/flutter_${os}_${FLUTTER_VERSION}-stable.${ext}"
   mkdir -p "$dest"
   echo "Flutter: скачиваем $url"
-  curl -fsSL --retry 3 -o "$RUNNER_TEMP/flutter-sdk.$ext" "$url"
+  curl -fsSL --retry 3 -o "$work_temp/flutter-sdk.$ext" "$url"
   # tar из Git for Windows (bsdtar) и GNU tar на Linux понимают свой формат;
   # zip распаковываем тем же tar — так шаг не зависит от наличия unzip.
-  tar -xf "$RUNNER_TEMP/flutter-sdk.$ext" -C "$dest"
+  tar -xf "$work_temp/flutter-sdk.$ext" -C "$dest"
 fi
 
-[ -x "$root/bin/flutter" ] || { echo "::error::Flutter не установился в $root"; exit 1; }
-echo "Flutter (скачан): $root"
-echo "FLUTTER_ROOT=$root" >>"$GITHUB_ENV"
-echo "$root/bin" >>"$GITHUB_PATH"
-echo "$root/bin/cache/dart-sdk/bin" >>"$GITHUB_PATH"
-"$root/bin/flutter" --version
+[ -f "$root/bin/flutter" ] || { echo "::error::Flutter не установился в $root"; exit 1; }
+echo "Flutter (скачан): $root_env"
+echo "FLUTTER_ROOT=$root_env" >>"$GITHUB_ENV"
+echo "$root_env/bin" >>"$GITHUB_PATH"
+echo "$root_env/bin/cache/dart-sdk/bin" >>"$GITHUB_PATH"
+bash "$root/bin/flutter" --version
