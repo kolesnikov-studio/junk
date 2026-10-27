@@ -29,6 +29,9 @@ jobs:
     name: Analyze + test
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout build repo
+        uses: actions/checkout@v4
+
       - name: Checkout private source
         uses: actions/checkout@v4
         with:
@@ -67,6 +70,9 @@ jobs:
     name: Android universal APK (clean)
     runs-on: windows-latest
     steps:
+      - name: Checkout build repo
+        uses: actions/checkout@v4
+
       - name: Checkout private source
         uses: actions/checkout@v4
         with:
@@ -143,6 +149,9 @@ jobs:
     name: Android ads APK
     runs-on: windows-latest
     steps:
+      - name: Checkout build repo
+        uses: actions/checkout@v4
+
       - name: Checkout private source
         uses: actions/checkout@v4
         with:
@@ -219,6 +228,9 @@ jobs:
     name: Windows NSIS + portable
     runs-on: windows-latest
     steps:
+      - name: Checkout build repo
+        uses: actions/checkout@v4
+
       - name: Checkout private source
         uses: actions/checkout@v4
         with:
@@ -326,6 +338,9 @@ jobs:
     name: Linux AppImage
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout build repo
+        uses: actions/checkout@v4
+
       - name: Checkout private source
         uses: actions/checkout@v4
         with:
@@ -394,6 +409,9 @@ jobs:
     needs: [analyze, windows, linux, android-ads]
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout build repo
+        uses: actions/checkout@v4
+
       - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
