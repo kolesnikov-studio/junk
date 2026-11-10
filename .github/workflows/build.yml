@@ -190,9 +190,28 @@ jobs:
           key-alias: ${{ secrets.ANDROID_KEY_ALIAS }}
           key-password: ${{ secrets.ANDROID_KEY_PASSWORD }}
 
+      - name: Resolve artifact label
+        id: label
+        shell: pwsh
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          $label = $env:INPUT_TAG
+          if (-not $label) {
+            $version = (Select-String -Path src/pubspec.yaml -Pattern '^version:\s*([0-9]+\.[0-9]+\.[0-9]+)').Matches[0].Groups[1].Value
+            $label = "v$version"
+          }
+          "version=$($label.TrimStart('v'))" >> $env:GITHUB_OUTPUT
+
       - name: Build ads APK
         working-directory: src
         run: flutter build apk --flavor ads --dart-define=ADMOB=true --dart-define=ADMOB_PRIVACY_POLICY_URL=https://kolesnikovstudio.com/legal/privacy-kopilka/ --release
+
+      # AAB для Google Play (M19 шаг 1, D-456): только ads-сборка и те же
+      # dart-define'ы, что у APK; подпись — тем же upload-ключом (D-455).
+      - name: Build ads AAB (Play)
+        working-directory: src
+        run: flutter build appbundle --flavor ads --dart-define=ADMOB=true --dart-define=ADMOB_PRIVACY_POLICY_URL=https://kolesnikovstudio.com/legal/privacy-kopilka/ --release
 
       - name: Verify APK signature (ads)
         working-directory: src
@@ -221,11 +240,48 @@ jobs:
           }
           Write-Host "APK подписан постоянным ключом Kopilka"
 
-      - name: Upload ads APK
+      # Подпись бандла до выкладки (D-264/D-456): jarsigner идёт вместе с JDK;
+      # не найден — проверка НЕ выполнена, поэтому красное, а не пропуск.
+      - name: Verify AAB signature (ads)
+        working-directory: src
+        shell: pwsh
+        run: |
+          $bundle = "build/app/outputs/bundle/adsRelease/app-ads-release.aab"
+          if (-not (Test-Path -LiteralPath $bundle)) {
+            throw "AAB не собран: $bundle"
+          }
+          if (-not (Get-Command jarsigner -ErrorAction SilentlyContinue)) {
+            throw "jarsigner не найден: подпись AAB не проверена (JDK)"
+          }
+          $out = (& jarsigner -verify -certs $bundle 2>&1 | Out-String)
+          Write-Host $out
+          if ($LASTEXITCODE -ne 0 -or $out -notmatch "jar verified") {
+            throw "AAB не подписан upload-ключом или подпись повреждена (jarsigner, код $LASTEXITCODE)"
+          }
+
+      # Контрактные имена ассетов закрытого релиза (D-456): Kopilka-<версия>.aab
+      # без ведущей «v» (как AppImage) и сумма рядом с ним.
+      - name: Make AAB contract copies
+        working-directory: src
+        shell: pwsh
+        env:
+          VERSION: ${{ steps.label.outputs.version }}
+        run: |
+          $bundle = "build/app/outputs/bundle/adsRelease/app-ads-release.aab"
+          $target = "Kopilka-$env:VERSION.aab"
+          Copy-Item -LiteralPath $bundle -Destination $target
+          # Формат суммы — как у установщика (D-208): 64 hex lowercase.
+          $hash = (certutil -hashfile $target SHA256 | Select-Object -Skip 1 -First 1).Trim()
+          $hash.ToLowerInvariant() | Set-Content -NoNewline -Encoding ascii "$target.sha256"
+
+      - name: Upload ads APK and AAB
         uses: actions/upload-artifact@v4
         with:
           name: android-ads
-          path: src/build/app/outputs/flutter-apk/app-ads-release.apk
+          path: |
+            src/build/app/outputs/flutter-apk/app-ads-release.apk
+            src/Kopilka-*.aab
+            src/Kopilka-*.aab.sha256
           if-no-files-found: error
 
       - name: Remove keystore
