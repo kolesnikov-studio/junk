@@ -491,6 +491,17 @@ jobs:
           path: dist
           merge-multiple: true
 
+      # Артефакты приходят с сохранённой структурой путей: app-ads-release.apk
+      # лежит в build/app/outputs/flutter-apk/, а не в корне. `gh release`
+      # каталоги не грузит — «read dist/build: is a directory», и рекламный
+      # APK в черновик не попадал. Складываем файлы плоско, чтобы имя ассета
+      # было контрактным (D-341/D-465).
+      - name: Flatten artifacts
+        run: |
+          mkdir -p assets
+          find dist -type f -exec cp -t assets {} +
+          ls -l assets
+
       - name: Create or update draft release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -498,10 +509,10 @@ jobs:
           REF: ${{ inputs.ref }}
         run: |
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" dist/* --clobber
+            gh release upload "$TAG" assets/* --clobber
           else
             gh release create "$TAG" --draft \
               --title "Kopilka $TAG" \
               --notes "Сборка Kopilka $TAG из закрытого kopilka-code@$REF на GitHub-hosted раннерах. Исходник в junk не хранится." \
-              dist/*
+              assets/*
           fi
