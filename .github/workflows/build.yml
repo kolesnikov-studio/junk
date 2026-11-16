@@ -203,15 +203,23 @@ jobs:
           }
           "version=$($label.TrimStart('v'))" >> $env:GITHUB_OUTPUT
 
+      # Dart-define ads-сборки (D-148.8): ADMOB включает features/ads.
+      # URL политики больше не передаётся: он один в lib/core/links.dart
+      # (D-462), а define из CI перекрывал его и расходился с приложением
+      # (D-475). Боевой ADMOB_BANNER_UNIT_ID — при решении Оператора о
+      # начале показов (D-148.4), пока тестовый из ads_build.dart.
       - name: Build ads APK
         working-directory: src
-        run: flutter build apk --flavor ads --dart-define=ADMOB=true --dart-define=ADMOB_PRIVACY_POLICY_URL=https://kolesnikovstudio.com/legal/privacy-kopilka/ --release
+        run: flutter build apk --flavor ads --dart-define=ADMOB=true --release
 
-      # AAB для Google Play (M19 шаг 1, D-456): только ads-сборка и те же
-      # dart-define'ы, что у APK; подпись — тем же upload-ключом (D-455).
+      # AAB для Google Play (M19 шаг 1, D-456): в Play уходит только ads-сборка
+      # с тем же ADMOB=true, что у APK, — иначе баннер и экран согласия UMP
+      # разошлись бы с политикой, указанной в карточке Play. URL политики —
+      # единый из links.dart (D-462/D-475). Бандл подписан тем же
+      # upload-ключом (D-455).
       - name: Build ads AAB (Play)
         working-directory: src
-        run: flutter build appbundle --flavor ads --dart-define=ADMOB=true --dart-define=ADMOB_PRIVACY_POLICY_URL=https://kolesnikovstudio.com/legal/privacy-kopilka/ --release
+        run: flutter build appbundle --flavor ads --dart-define=ADMOB=true --release
 
       - name: Verify APK signature (ads)
         working-directory: src
