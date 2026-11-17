@@ -263,16 +263,23 @@ jobs:
           if (-not (Get-Command jarsigner -ErrorAction SilentlyContinue)) {
             throw "jarsigner не найден: подпись AAB не проверена (JDK)"
           }
-          # -verbose -certs печатает `Certificate fingerprint (SHA-256): …`:
-          # без них в выводе нет отпечатка и сверять нечего (D-475).
-          $out = (& jarsigner -verify -verbose -certs $bundle 2>&1 | Out-String)
+          $out = (& jarsigner -verify -certs $bundle 2>&1 | Out-String)
           Write-Host $out
           if ($LASTEXITCODE -ne 0 -or $out -notmatch "jar verified") {
             throw "AAB не подписан upload-ключом или подпись повреждена (jarsigner, код $LASTEXITCODE)"
           }
-          $m = [regex]::Match($out, "Certificate fingerprint \(SHA-256\):\s*([0-9A-Fa-f:]+)")
+          # Отпечаток печатает keytool: jarsigner -verify показывает только DN и
+          # срок сертификата (проверено на JDK 17 в junk, прогон 44165740396).
+          if (-not (Get-Command keytool -ErrorAction SilentlyContinue)) {
+            throw "keytool не найден: отпечаток сертификата AAB не сверен (JDK из setup-toolchain)"
+          }
+          $certs = (& keytool -printcert -jarfile $bundle 2>&1 | Out-String)
+          if ($LASTEXITCODE -ne 0) {
+            throw "keytool не прочитал сертификаты AAB (код $LASTEXITCODE)"
+          }
+          $m = [regex]::Match($certs, "SHA256:\s*([0-9A-Fa-f:]+)")
           if (-not $m.Success) {
-            throw "jarsigner не вернул отпечаток сертификата: подпись AAB не сверена (D-475)"
+            throw "keytool не вернул SHA-256 сертификата: подпись AAB не сверена (D-475)"
           }
           # Приведение к виду ANDROID_CERT_SHA256: 64 hex без двоеточий.
           $digest = ($m.Groups[1].Value -replace "[:\s]", "").ToLowerInvariant()
