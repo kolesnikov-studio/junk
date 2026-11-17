@@ -248,8 +248,10 @@ jobs:
           }
           Write-Host "APK подписан постоянным ключом Kopilka"
 
-      # Подпись бандла до выкладки (D-264/D-456): jarsigner идёт вместе с JDK;
-      # не найден — проверка НЕ выполнена, поэтому красное, а не пропуск.
+      # Подпись бандла до выкладки (D-264/D-456/D-475): jarsigner идёт вместе
+      # с JDK; не найден — проверка НЕ выполнена, поэтому красное, а не
+      # пропуск. «jar verified» пропускает любой ключ, поэтому сертификат
+      # сверяется с ANDROID_CERT_SHA256 — как у APK (D-475).
       - name: Verify AAB signature (ads)
         working-directory: src
         shell: pwsh
@@ -261,11 +263,25 @@ jobs:
           if (-not (Get-Command jarsigner -ErrorAction SilentlyContinue)) {
             throw "jarsigner не найден: подпись AAB не проверена (JDK)"
           }
-          $out = (& jarsigner -verify -certs $bundle 2>&1 | Out-String)
+          # -verbose -certs печатает `Certificate fingerprint (SHA-256): …`:
+          # без них в выводе нет отпечатка и сверять нечего (D-475).
+          $out = (& jarsigner -verify -verbose -certs $bundle 2>&1 | Out-String)
           Write-Host $out
           if ($LASTEXITCODE -ne 0 -or $out -notmatch "jar verified") {
             throw "AAB не подписан upload-ключом или подпись повреждена (jarsigner, код $LASTEXITCODE)"
           }
+          $m = [regex]::Match($out, "Certificate fingerprint \(SHA-256\):\s*([0-9A-Fa-f:]+)")
+          if (-not $m.Success) {
+            throw "jarsigner не вернул отпечаток сертификата: подпись AAB не сверена (D-475)"
+          }
+          # Приведение к виду ANDROID_CERT_SHA256: 64 hex без двоеточий.
+          $digest = ($m.Groups[1].Value -replace "[:\s]", "").ToLowerInvariant()
+          Write-Host "AAB cert SHA-256: $digest"
+          Write-Host "expected        : $($env:ANDROID_CERT_SHA256.ToLowerInvariant())"
+          if ($digest -ne $env:ANDROID_CERT_SHA256.ToLowerInvariant()) {
+            throw "AAB подписан НЕ постоянным ключом Kopilka (D-475): обновление в Play не встанет поверх установленного"
+          }
+          Write-Host "AAB подписан постоянным ключом Kopilka (D-475)"
 
       # Контрактные имена ассетов закрытого релиза (D-456): Kopilka-<версия>.aab
       # без ведущей «v» (как AppImage) и сумма рядом с ним.
