@@ -305,12 +305,26 @@ jobs:
           $hash = (certutil -hashfile $target SHA256 | Select-Object -Skip 1 -First 1).Trim()
           $hash.ToLowerInvariant() | Set-Content -NoNewline -Encoding ascii "$target.sha256"
 
+      # Контрактное имя APK для людей (M20, D-486): ассет — Kopilka-<версия>.apk,
+      # внутреннее имя сборки app-ads-release.apk остаётся путём сборки/подписи.
+      - name: Make APK contract copy
+        working-directory: src
+        shell: pwsh
+        env:
+          VERSION: ${{ steps.label.outputs.version }}
+        run: |
+          $apk = "build/app/outputs/flutter-apk/app-ads-release.apk"
+          if (-not (Test-Path -LiteralPath $apk)) {
+            throw "APK не собран: $apk"
+          }
+          Copy-Item -LiteralPath $apk -Destination "Kopilka-$env:VERSION.apk"
+
       - name: Upload ads APK and AAB
         uses: actions/upload-artifact@v4
         with:
           name: android-ads
           path: |
-            src/build/app/outputs/flutter-apk/app-ads-release.apk
+            src/Kopilka-*.apk
             src/Kopilka-*.aab
             src/Kopilka-*.aab.sha256
           if-no-files-found: error
